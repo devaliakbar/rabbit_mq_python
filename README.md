@@ -5,52 +5,66 @@
 ### Sender
 
 ```python
-import pika
-import sys
+import asyncio
+import aio_pika
 
-connection = pika.BlockingConnection(
-    pika.ConnectionParameters(host='localhost'))
-channel = connection.channel()
 
-channel.queue_declare(queue='task_queue', durable=True)
-channel.confirm_delivery()
+async def main():
+    connection = await aio_pika.connect_robust("amqp://localhost/")
 
-message = "Hello World!"
-channel.basic_publish(
-    exchange='',
-    routing_key='task_queue',
-    body=message,
-    properties=pika.BasicProperties(
-        delivery_mode=pika.DeliveryMode.Persistent
-    ))
+    async with connection:
+        channel = await connection.channel()
 
-print(f" [x] Sent {message}")
-connection.close()
+        await channel.declare_queue("task_queue", durable=True)
+
+        for i in range(1, 5):
+            message = aio_pika.Message(
+                body=str(i).encode(),
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            )
+            await channel.default_exchange.publish(
+                message,
+                routing_key="task_queue",
+            )
+            print(f" [x] Sent {i}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ### Receiver
 
 ```python
-import pika
-import time
-
-connection = pika.BlockingConnection(
-    pika.ConnectionParameters(host='localhost'))
-channel = connection.channel()
-
-channel.queue_declare(queue='task_queue', durable=True)
-print(' [*] Waiting for messages. To exit press CTRL+C')
+import asyncio
+import aio_pika
 
 
-def callback(ch, method, properties, body):
-    print(f" [x] Received {body.decode()}")
-    time.sleep(body.count(b'.'))
-    print(" [x] Done")
-    ch.basic_ack(delivery_tag=method.delivery_tag)
+async def process_message(message: aio_pika.IncomingMessage):
+    async with message.process():
+        body = message.body.decode()
+        print(f" [x] Received {body}")
+        await asyncio.sleep(8)
+        print(f" [x] Done {body}")
 
 
-channel.basic_qos(prefetch_count=1)
-channel.basic_consume(queue='task_queue', on_message_callback=callback)
+async def main():
+    connection = await aio_pika.connect_robust("amqp://localhost/")
 
-channel.start_consuming()
+    async with connection:
+        channel = await connection.channel()
+
+        await channel.set_qos(prefetch_count=2)
+
+        queue = await channel.declare_queue("task_queue", durable=True)
+
+        print(" [*] Waiting for messages. To exit press CTRL+C")
+
+        await queue.consume(process_message)
+
+        await asyncio.Future()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
